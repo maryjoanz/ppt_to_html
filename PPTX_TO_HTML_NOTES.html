@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>PPTX_TO_HTML_NOTES</title>
+  <style>
+
+html {
+color: #1a1a1a;
+background-color: #fdfdfd;
+}
+body {
+margin: 0 auto;
+max-width: 36em;
+padding-left: 50px;
+padding-right: 50px;
+padding-top: 50px;
+padding-bottom: 50px;
+hyphens: auto;
+overflow-wrap: break-word;
+text-rendering: optimizeLegibility;
+font-kerning: normal;
+}
+@media (max-width: 600px) {
+body {
+font-size: 0.9em;
+padding: 12px;
+}
+h1 {
+font-size: 1.8em;
+}
+}
+@media print {
+html {
+background-color: white;
+}
+body {
+background-color: transparent;
+color: black;
+font-size: 12pt;
+}
+p, h2, h3 {
+orphans: 3;
+widows: 3;
+}
+h2, h3, h4 {
+page-break-after: avoid;
+}
+}
+p {
+margin: 1em 0;
+}
+a {
+color: #1a1a1a;
+}
+a:visited {
+color: #1a1a1a;
+}
+img {
+max-width: 100%;
+}
+svg {
+height: auto;
+max-width: 100%;
+}
+h1, h2, h3, h4, h5, h6 {
+margin-top: 1.4em;
+}
+h5, h6 {
+font-size: 1em;
+font-style: italic;
+}
+h6 {
+font-weight: normal;
+}
+ol, ul {
+padding-left: 1.7em;
+margin-top: 1em;
+}
+li > ol, li > ul {
+margin-top: 0;
+}
+blockquote {
+margin: 1em 0 1em 1.7em;
+padding-left: 1em;
+border-left: 2px solid #e6e6e6;
+color: #606060;
+}
+code {
+font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+font-size: 85%;
+margin: 0;
+hyphens: manual;
+}
+pre {
+margin: 1em 0;
+overflow: auto;
+}
+pre code {
+padding: 0;
+overflow: visible;
+overflow-wrap: normal;
+}
+.sourceCode {
+background-color: transparent;
+overflow: visible;
+}
+hr {
+border: none;
+border-top: 1px solid #1a1a1a;
+height: 1px;
+margin: 1em 0;
+}
+table {
+margin: 1em 0;
+border-collapse: collapse;
+width: 100%;
+overflow-x: auto;
+display: block;
+font-variant-numeric: lining-nums tabular-nums;
+}
+table caption {
+margin-bottom: 0.75em;
+}
+tbody {
+margin-top: 0.5em;
+border-top: 1px solid #1a1a1a;
+border-bottom: 1px solid #1a1a1a;
+}
+th {
+border-top: 1px solid #1a1a1a;
+padding: 0.25em 0.5em 0.25em 0.5em;
+}
+td {
+padding: 0.125em 0.5em 0.25em 0.5em;
+}
+header {
+margin-bottom: 4em;
+text-align: center;
+}
+#TOC li {
+list-style: none;
+}
+#TOC ul {
+padding-left: 1.3em;
+}
+#TOC > ul {
+padding-left: 0;
+}
+#TOC a:not(:hover) {
+text-decoration: none;
+}
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+</head>
+<body>
+<h1 id="powerpoint-to-html-converter-notes">PowerPoint to HTML Converter
+— Notes</h1>
+<h2 id="q1-reading-order-slide-3">Q1: Reading Order (Slide 3)</h2>
+<p><strong>Root cause: a two-pass architecture conflict with
+math-containing text boxes.</strong></p>
+<p>PowerPoint wraps any text box that contains an inline equation in an
+<code>&lt;mc:AlternateContent&gt;</code> element in the slide XML.
+<code>python-pptx</code>’s <code>slide.shapes</code> iterator silently
+skips these elements, so they are invisible to normal iteration.</p>
+<p>The original converter handled shapes in two separate passes inside
+<code>convert_slide</code>:</p>
+<ul>
+<li><strong>Pass 1</strong>: iterates <code>slide.shapes</code> —
+processes all regular shapes (text frames, pictures, tables, groups) in
+XML / z-order.</li>
+<li><strong>Pass 2</strong>: scans the raw <code>spTree</code> XML for
+<code>&lt;mc:AlternateContent&gt;</code> elements and appends their
+content <strong>after everything from Pass 1</strong>, regardless of
+where they appear in document order.</li>
+</ul>
+<p>On Slide 3 the “Data” text box contains inline math equations, so it
+is an <code>&lt;mc:AlternateContent&gt;</code> element. The graphic is a
+regular picture shape visible in Pass 1. Result:</p>
+<table>
+<thead>
+<tr>
+<th>Step</th>
+<th>What was rendered</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pass 1</td>
+<td>Core constraints text → <strong>Graphic</strong></td>
+</tr>
+<tr>
+<td>Pass 2</td>
+<td><strong>Data section</strong> (with math) appended last</td>
+</tr>
+</tbody>
+</table>
+<p>Even though the PPT reading order (tab order / Selection Pane) shows
+Data before the graphic, the converter always emitted AlternateContent
+shapes last. Reordering shapes in PowerPoint’s Selection Pane could not
+fix this.</p>
+<h3 id="fix-single-unified-pass-implemented">Fix: single unified pass
+(implemented)</h3>
+<p>The two-pass approach has been replaced with a hybrid single-pass
+design in <code>convert_slide</code>:</p>
+<ol type="1">
+<li><strong>Build a <code>shape_id → Shape</code> map</strong> from
+<code>slide.shapes</code> (one cheap scan). This extracts the title,
+marks shapes to suppress (slide numbers, running headers), and keeps
+references to all python-pptx <code>Shape</code> objects so their full
+API remains available.</li>
+<li><strong>Walk <code>spTree</code> direct children in document
+order.</strong> For each child:
+<ul>
+<li>Regular shape tags (<code>p:sp</code>, <code>p:pic</code>,
+<code>p:grpSp</code>, <code>p:graphicFrame</code>, <code>p:cxnSp</code>)
+— look up the corresponding <code>Shape</code> by ID and dispatch to the
+existing renderer. All image, table, text-frame, and group logic is
+unchanged.</li>
+<li><code>mc:AlternateContent</code> — render the math text box inline
+via <code>render_txBody_from_xml</code>, in its correct document
+position.</li>
+</ul></li>
+</ol>
+<p>This preserves the full python-pptx API for all non-math shapes (no
+XML reimplementation of image or table rendering) while correctly
+interleaving math shapes with regular content. Reordering shapes in
+PowerPoint’s Selection Pane now has the expected effect on HTML output
+order.</p>
+<hr />
+<h2 id="q2-image-scaling">Q2: Image Scaling</h2>
+<p>Images are sized using the shape’s actual EMU dimensions from the
+slide, converted to pixels at 96 DPI:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>px_w <span class="op">=</span> <span class="bu">round</span>(shape.width <span class="op">/</span> <span class="dv">914400</span> <span class="op">*</span> <span class="dv">96</span>)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>px_h <span class="op">=</span> <span class="bu">round</span>(shape.height <span class="op">/</span> <span class="dv">914400</span> <span class="op">*</span> <span class="dv">96</span>)</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>size_style <span class="op">=</span> <span class="ss">f&#39; style=&quot;width:</span><span class="sc">{</span>px_w<span class="sc">}</span><span class="ss">px; height:</span><span class="sc">{</span>px_h<span class="sc">}</span><span class="ss">px; max-width:100%; height:auto;&quot;&#39;</span></span></code></pre></div>
+<p>The CSS also applies
+<code>figure img { max-width: 100%; height: auto; }</code> within a
+<code>main { max-width: 900px }</code> container.</p>
+<p>A standard PowerPoint slide is 10 inches wide, which calculates to
+~960 px at 96 DPI. A large image spanning most of the slide width will
+therefore be rendered at nearly the full 900 px container width — which
+reads as “full page” in the HTML.</p>
+<h3 id="img-scale-option-implemented"><code>--img-scale</code> option
+(implemented)</h3>
+<p>An <code>--img-scale PCT</code> command-line option has been added.
+It accepts a percentage and multiplies the calculated pixel dimensions
+before writing the inline style. The <code>max-width: 100%</code>
+constraint is retained, so images remain responsive on narrow screens
+regardless of scale.</p>
+<pre><code>python pptx_to_accessible_html.py deck.pptx --img-scale 60
+python pptx_to_accessible_html.py deck.pptx --img-scale 50 --mathjax</code></pre>
+<p>Default is <code>100</code> (no change from previous behavior).</p>
+<hr />
+<h2 id="q3-authoring-math-in-powerpoint-for-best-omml-mathml-conversion">Q3:
+Authoring Math in PowerPoint for Best OMML → MathML Conversion</h2>
+<p>The script converts <strong>OMML</strong> (Office Math Markup
+Language) to MathML. OMML is the internal format produced by
+PowerPoint’s modern equation editor. Any approach that results in OMML
+in the <code>.pptx</code> XML will convert well; anything that does not
+produce OMML will not convert at all.</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr>
+<th>Approach</th>
+<th>Conversion quality</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Insert &gt; Equation</strong> (ribbon, point-and-click)</td>
+<td>Best</td>
+<td>Creates native OMML. The gold standard.</td>
+</tr>
+<tr>
+<td><strong>LaTeX input in equation editor</strong></td>
+<td>Best</td>
+<td>Open equation editor (<code>Alt+=</code>), type LaTeX syntax
+(e.g. <code>\frac{a}{b}</code>), press Space to commit. PPT converts to
+OMML internally — identical result to point-and-click.</td>
+</tr>
+<tr>
+<td><strong>UnicodeMath input in equation editor</strong></td>
+<td>Best</td>
+<td>Another shorthand within the same editor (e.g. <code>x^2/2</code> +
+Space). Also saves as OMML.</td>
+</tr>
+<tr>
+<td>Images of equations (screenshots, etc.)</td>
+<td>None</td>
+<td>No mathematical structure. Falls back to the
+<code>&lt;mc:Fallback&gt;</code> raster image in the PPTX, which the
+converter cannot interpret.</td>
+</tr>
+<tr>
+<td>Legacy Equation 3.0 (Insert &gt; Object)</td>
+<td>None</td>
+<td>OLE object embedded in the slide. Not OMML. Completely invisible to
+the converter.</td>
+</tr>
+<tr>
+<td>Text characters mimicking math (<code>x^2</code>, <code>/</code>,
+Unicode letters)</td>
+<td>None</td>
+<td>Rendered as plain text. No semantic math structure to convert.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="practical-tips-for-best-conversion-quality">Practical tips for
+best conversion quality</h3>
+<ul>
+<li><strong>Use a single equation object per expression.</strong> Don’t
+split <code>a + b = c</code> across multiple equation boxes or mix
+equation boxes with plain text runs.</li>
+<li><strong>Use semantic structures.</strong> Build fractions with the
+fraction operator, superscripts/subscripts with their proper operators,
+summations with the summation template — not workarounds using
+<code>/</code>, <code>^</code>, or Unicode characters typed as plain
+text.</li>
+<li><strong>Subscripted and superscripted variables</strong> convert
+reliably. Complex multi-line arrays and matrices can be lossier
+depending on nesting depth.</li>
+<li><strong>Run with <code>--mathjax</code></strong> for the best
+cross-browser MathML rendering. Native MathML support varies (especially
+between Safari and Firefox), and MathJax normalizes this.</li>
+<li><strong>Run with <code>--focusable-math</code></strong> if keyboard
+and screen-reader accessibility is a priority — it adds
+<code>tabindex=&quot;0&quot;</code> to each <code>&lt;math&gt;</code> element so
+users can tab directly to equations.</li>
+</ul>
+</body>
+</html>
