@@ -9,10 +9,13 @@ Converts PowerPoint (.pptx) files to accessible HTML, preserving:
   - Tables with proper <th>/<td> structure
 
 Usage:
-  Single file:  python pptx_to_accessible_html.py presentation.pptx
-  Output name:  python pptx_to_accessible_html.py presentation.pptx -o output.html
-  Batch folder: python pptx_to_accessible_html.py ./slides_folder/
-  With notes:   python pptx_to_accessible_html.py presentation.pptx --include-notes
+  Single file:      python pptx_to_accessible_html.py presentation.pptx
+  Output name:      python pptx_to_accessible_html.py presentation.pptx -o output.html
+  Batch folder:     python pptx_to_accessible_html.py ./slides_folder/
+  With notes:       python pptx_to_accessible_html.py presentation.pptx --include-notes
+  Focusable math:   python pptx_to_accessible_html.py presentation.pptx --focusable-math
+  With MathJax:     python pptx_to_accessible_html.py presentation.pptx --mathjax
+  Scale images:     python pptx_to_accessible_html.py presentation.pptx --img-scale 60
 
 Requirements:
   pip install python-pptx
@@ -21,6 +24,7 @@ Requirements:
 import argparse
 import base64
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -148,6 +152,49 @@ def escape_html(text: str) -> str:
     )
 
 
+MONOSPACE_FONTS = {
+    "consolas", "courier", "courier new", "lucida console", "monaco",
+    "menlo", "source code pro", "fira code", "fira mono",
+    "dejavu sans mono", "liberation mono", "roboto mono",
+    "jetbrains mono", "inconsolata", "cascadia code", "cascadia mono",
+    "sf mono", "hack", "droid sans mono", "ubuntu mono",
+    "noto sans mono", "ibm plex mono", "anonymous pro",
+    "ocr a", "ocr b", "andale mono", "lucida sans typewriter",
+}
+
+
+def is_code_shape(shape) -> bool:
+    """Detect code content via shape name convention or monospace font usage."""
+    try:
+        if shape.name and "code" in shape.name.lower():
+            return True
+    except Exception:
+        pass
+    if not shape.has_text_frame:
+        return False
+    mono_runs = 0
+    total_runs = 0
+    for para in shape.text_frame.paragraphs:
+        for run in para.runs:
+            if not run.text.strip():
+                continue
+            total_runs += 1
+            font_name = run.font.name
+            if font_name and font_name.strip().lower() in MONOSPACE_FONTS:
+                mono_runs += 1
+    return total_runs > 0 and mono_runs == total_runs
+
+
+def render_code_block(tf) -> str:
+    """Render a text frame as a <pre><code> block, preserving whitespace."""
+    lines = []
+    for para in tf.paragraphs:
+        # Preserve original text including leading whitespace
+        lines.append(escape_html(para.text))
+    code_text = "\n".join(lines)
+    return f"<pre><code>{code_text}</code></pre>"
+
+
 def is_title_placeholder(shape) -> bool:
     """Return True if the shape is a title or centered-title placeholder."""
     from pptx.enum.text import PP_ALIGN
@@ -166,51 +213,446 @@ def is_subtitle_placeholder(shape) -> bool:
         ph = shape.placeholder_format
         if ph is None:
             return False
-        return ph.type in (2, 15)  # BODY or SUBTITLE
+        return ph.type == 15  # SUBTITLE only (not BODY=2, which is main content)
     except Exception:
         return False
+
+
+def is_slide_number_placeholder(shape) -> bool:
+    try:
+        ph = shape.placeholder_format
+        if ph is None:
+            return False
+        return ph.type == 13  # SLIDE_NUMBER
+    except Exception:
+        return False
+
+
+def is_running_header(shape, deck_title: str) -> bool:
+    """Return True if shape is a body placeholder whose text matches the deck title."""
+    if not deck_title:
+        return False
+    try:
+        ph = shape.placeholder_format
+        if ph is None or ph.type != 2:  # BODY
+            return False
+        if shape.has_text_frame:
+            return shape.text_frame.text.strip() == deck_title
+    except Exception:
+        pass
+    return False
 
 
 def shape_has_text(shape) -> bool:
     return shape.has_text_frame and shape.text_frame.text.strip()
 
 
-def render_text_frame(tf, base_heading_level: int = 3) -> str:
+_CITATION_RE = re.compile(r'^[\d,\s\-–]+$')
+
+
+# ── OMML → MathML conversion ──────────────────────────────────────────────────
+#
+# PowerPoint embeds maths as OMML (Office Math Markup Language) inside
+# <a14:m><m:oMath>…</m:oMath></a14:m> wrappers that appear as siblings of
+# <a:r> text runs inside <a:p> paragraphs.  The entire shape containing math
+# is often wrapped in <mc:AlternateContent> and therefore invisible to the
+# normal python-pptx shape iterator; we handle that separately in convert_slide.
+#
+# Namespace URIs
+_DML_NS  = "http://schemas.openxmlformats.org/drawingml/2006/main"
+_M_NS    = "http://schemas.openxmlformats.org/officeDocument/2006/math"
+_A14_NS  = "http://schemas.microsoft.com/office/drawing/2010/main"
+_MC_NS   = "http://schemas.openxmlformats.org/markup-compatibility/2006"
+_PML_NS  = "http://schemas.openxmlformats.org/presentationml/2006/main"
+
+_A   = f"{{{_DML_NS}}}"
+_M   = f"{{{_M_NS}}}"
+_A14 = f"{{{_A14_NS}}}"
+_MC  = f"{{{_MC_NS}}}"
+_P   = f"{{{_PML_NS}}}"
+
+# Single-character strings we classify as math operators
+_MATH_OPS = frozenset(
+    '+-=<>≤≥≠±∓·∘∈∉⊆⊇⊂⊃∪∩∧∨¬→⟹←↔⟺∀∃∂∇∑∏∫∮√∞×÷|/\\:;!?,.^~'
+)
+
+# OMML property / control elements whose subtrees carry no renderable content
+_M_PROP_TAGS = {
+    f"{_M}rPr", f"{_M}sSubSupPr", f"{_M}sSubPr", f"{_M}sSupPr",
+    f"{_M}fPr", f"{_M}radPr", f"{_M}dPr", f"{_M}naryPr", f"{_M}mPr",
+    f"{_M}eqArrPr", f"{_M}funcPr", f"{_M}limLowPr", f"{_M}limUppPr",
+    f"{_M}accPr", f"{_M}barPr", f"{_M}groupChrPr", f"{_M}ctrlPr",
+    f"{_M}phantPr",
+}
+
+
+def _mval(el, default: str = "") -> str:
+    """Return the m:val attribute value of an OMML element (namespace-qualified)."""
+    if el is None:
+        return default
+    return el.get(f"{_M}val") or el.get("val") or default
+
+
+def _mrow(inner: str) -> str:
+    return f"<mrow>{inner}</mrow>"
+
+
+def _children_ml(el) -> str:
+    """Recursively convert all children of el to MathML string fragments."""
+    return "" if el is None else "".join(_omml_el(c) for c in el)
+
+
+def _get_math_variant(r_el) -> str:
+    """
+    Derive a MathML mathvariant string from an m:r element's run-property
+    children.  Checks both m:rPr (OMML) and a:rPr (DrawingML).
+    Returns '' when the MathML default (italic for single-char <mi>) applies.
+    """
+    _STY = {"p": "normal", "b": "bold", "bi": "bold-italic"}
+    _SCR = {
+        "cal": "script", "frak": "fraktur",
+        "double-struck": "double-struck",
+        "sans-serif": "sans-serif", "monospace": "monospace",
+    }
+    for child in r_el:
+        if child.tag == f"{_M}rPr":
+            if child.find(f"{_M}nor") is not None:
+                return "normal"
+            sty = child.find(f"{_M}sty")
+            scr = child.find(f"{_M}scr")
+            return _STY.get(_mval(sty), "") or _SCR.get(_mval(scr), "")
+    return ""
+
+
+def _math_token(text: str, variant: str) -> str:
+    """Wrap a math text string in the appropriate MathML token element."""
+    safe = escape_html(text)
+    if re.fullmatch(r'\d+(?:\.\d*)?', text):
+        return f"<mn>{safe}</mn>"
+    if len(text) == 1 and text in _MATH_OPS:
+        return f"<mo>{safe}</mo>"
+    attr = f' mathvariant="{variant}"' if variant and variant != "italic" else ""
+    return f"<mi{attr}>{safe}</mi>"
+
+
+def _omml_el(el) -> str:
+    """Convert a single OMML element (and subtree) to a MathML string."""
+    tag = el.tag
+
+    # Skip property / control elements entirely
+    if tag in _M_PROP_TAGS:
+        return ""
+
+    # ── Math run (leaf) ──────────────────────────────────────────────────────
+    if tag == f"{_M}r":
+        t_el = el.find(f"{_M}t")
+        text = (t_el.text or "") if t_el is not None else ""
+        return _math_token(text, _get_math_variant(el)) if text else ""
+
+    # ── Fraction ─────────────────────────────────────────────────────────────
+    if tag == f"{_M}f":
+        return f"<mfrac>{_mrow(_children_ml(el.find(f'{_M}num')))}{_mrow(_children_ml(el.find(f'{_M}den')))}</mfrac>"
+
+    # ── Sub + Sup ─────────────────────────────────────────────────────────────
+    if tag == f"{_M}sSubSup":
+        b = _mrow(_children_ml(el.find(f"{_M}e")))
+        s = _mrow(_children_ml(el.find(f"{_M}sub")))
+        p = _mrow(_children_ml(el.find(f"{_M}sup")))
+        return f"<msubsup>{b}{s}{p}</msubsup>"
+
+    if tag == f"{_M}sSub":
+        return f"<msub>{_mrow(_children_ml(el.find(f'{_M}e')))}{_mrow(_children_ml(el.find(f'{_M}sub')))}</msub>"
+
+    if tag == f"{_M}sSup":
+        return f"<msup>{_mrow(_children_ml(el.find(f'{_M}e')))}{_mrow(_children_ml(el.find(f'{_M}sup')))}</msup>"
+
+    # ── Radical ───────────────────────────────────────────────────────────────
+    if tag == f"{_M}rad":
+        deg_str = _children_ml(el.find(f"{_M}deg"))
+        base    = _mrow(_children_ml(el.find(f"{_M}e")))
+        return f"<mroot>{base}{_mrow(deg_str)}</mroot>" if deg_str.strip() else f"<msqrt>{base}</msqrt>"
+
+    # ── Delimiters / fence ────────────────────────────────────────────────────
+    if tag == f"{_M}d":
+        dPr = el.find(f"{_M}dPr")
+        beg = escape_html(_mval(dPr.find(f"{_M}begChr") if dPr is not None else None, "("))
+        end = escape_html(_mval(dPr.find(f"{_M}endChr") if dPr is not None else None, ")"))
+        sep = escape_html(_mval(dPr.find(f"{_M}sepChr") if dPr is not None else None, "|"))
+        inner_parts = [_mrow(_children_ml(e)) for e in el if e.tag == f"{_M}e"]
+        inner = f"<mo>{sep}</mo>".join(inner_parts)
+        return f"<mrow><mo>{beg}</mo>{inner}<mo>{end}</mo></mrow>"
+
+    # ── N-ary operator (∫, ∑, ∏ …) ───────────────────────────────────────────
+    if tag == f"{_M}nary":
+        naryPr = el.find(f"{_M}naryPr")
+        op_chr = escape_html(_mval(naryPr.find(f"{_M}chr") if naryPr is not None else None, "∫"))
+        op_mo  = f'<mo largeop="true">{op_chr}</mo>'
+        sub, sup = el.find(f"{_M}sub"), el.find(f"{_M}sup")
+        body = _mrow(_children_ml(el.find(f"{_M}e")))
+        if sub is not None and sup is not None:
+            return f"<mrow><msubsup>{op_mo}{_mrow(_children_ml(sub))}{_mrow(_children_ml(sup))}</msubsup>{body}</mrow>"
+        if sub is not None:
+            return f"<mrow><msub>{op_mo}{_mrow(_children_ml(sub))}</msub>{body}</mrow>"
+        if sup is not None:
+            return f"<mrow><msup>{op_mo}{_mrow(_children_ml(sup))}</msup>{body}</mrow>"
+        return f"<mrow>{op_mo}{body}</mrow>"
+
+    # ── Function application ──────────────────────────────────────────────────
+    if tag == f"{_M}func":
+        return f"<mrow>{_children_ml(el.find(f'{_M}fName'))}<mo>&#x2061;</mo>{_children_ml(el.find(f'{_M}e'))}</mrow>"
+
+    # ── Under / over limits ───────────────────────────────────────────────────
+    if tag == f"{_M}limLow":
+        return f"<munder>{_mrow(_children_ml(el.find(f'{_M}e')))}{_mrow(_children_ml(el.find(f'{_M}lim')))}</munder>"
+
+    if tag == f"{_M}limUpp":
+        return f"<mover>{_mrow(_children_ml(el.find(f'{_M}e')))}{_mrow(_children_ml(el.find(f'{_M}lim')))}</mover>"
+
+    # ── Accent ────────────────────────────────────────────────────────────────
+    if tag == f"{_M}acc":
+        accPr = el.find(f"{_M}accPr")
+        chr_v = escape_html(_mval(accPr.find(f"{_M}chr") if accPr is not None else None, "̂"))
+        return f"<mover>{_mrow(_children_ml(el.find(f'{_M}e')))}<mo>{chr_v}</mo></mover>"
+
+    # ── Bar ────────────────────────────────────────────────────────────────────
+    if tag == f"{_M}bar":
+        barPr = el.find(f"{_M}barPr")
+        pos   = _mval(barPr.find(f"{_M}pos") if barPr is not None else None, "top")
+        base  = _mrow(_children_ml(el.find(f"{_M}e")))
+        bar   = '<mo stretchy="true">&#x305;</mo>'
+        return f"<munder>{base}{bar}</munder>" if pos == "bot" else f"<mover>{base}{bar}</mover>"
+
+    # ── Grouping character ────────────────────────────────────────────────────
+    if tag == f"{_M}groupChr":
+        gcPr  = el.find(f"{_M}groupChrPr")
+        chr_v = escape_html(_mval(gcPr.find(f"{_M}chr") if gcPr is not None else None, "⏞"))
+        pos   = _mval(gcPr.find(f"{_M}pos") if gcPr is not None else None, "top")
+        base  = _mrow(_children_ml(el.find(f"{_M}e")))
+        mo    = f"<mo>{chr_v}</mo>"
+        return f"<munder>{base}{mo}</munder>" if pos == "bot" else f"<mover>{base}{mo}</mover>"
+
+    # ── Matrix ────────────────────────────────────────────────────────────────
+    if tag == f"{_M}m":
+        rows = "".join(
+            "<mtr>" + "".join(f"<mtd>{_mrow(_children_ml(e))}</mtd>" for e in mr if e.tag == f"{_M}e") + "</mtr>"
+            for mr in el if mr.tag == f"{_M}mr"
+        )
+        return f"<mtable>{rows}</mtable>"
+
+    # ── Equation array ────────────────────────────────────────────────────────
+    if tag == f"{_M}eqArr":
+        rows = "".join(f"<mtr><mtd>{_mrow(_children_ml(e))}</mtd></mtr>" for e in el if e.tag == f"{_M}e")
+        return f"<mtable>{rows}</mtable>"
+
+    # ── Phantom ───────────────────────────────────────────────────────────────
+    if tag == f"{_M}phant":
+        return f"<mphantom>{_mrow(_children_ml(el.find(f'{_M}e')))}</mphantom>"
+
+    # ── Box / border box ──────────────────────────────────────────────────────
+    if tag in (f"{_M}box", f"{_M}borderBox"):
+        return f'<menclose notation="box">{_mrow(_children_ml(el.find(f"{_M}e")))}</menclose>'
+
+    # ── Pre-scripts ───────────────────────────────────────────────────────────
+    if tag == f"{_M}sPre":
+        base = _children_ml(el.find(f"{_M}e"))
+        sub  = _mrow(_children_ml(el.find(f"{_M}sub")))
+        sup  = _mrow(_children_ml(el.find(f"{_M}sup")))
+        return f"<mmultiscripts>{base}<mprescripts/>{sub}{sup}</mmultiscripts>"
+
+    # ── oMath / oMathPara: transparent containers ─────────────────────────────
+    if tag in (f"{_M}oMath", f"{_M}oMathPara"):
+        return _children_ml(el)
+
+    # ── Generic fallback: recurse (preserves content for unknown elements) ────
+    return _children_ml(el)
+
+
+def omml_to_mathml(omath_el, display: str = "inline", focusable: bool = False) -> str:
+    """
+    Convert an ``m:oMath`` (or ``m:oMathPara``) element to an HTML5-embeddable
+    ``<math>`` string.
+
+    Supports fractions, radicals, sub/sup, n-ary operators, delimiters,
+    matrices, accents, limits, and more.  Unknown OMML elements fall back to
+    processing their children so text content is always preserved.
+
+    Args:
+        omath_el:  ElementTree element whose tag is m:oMath or m:oMathPara.
+        display:   ``"inline"`` or ``"block"``.
+        focusable: When True, adds ``tabindex="0"`` so keyboard users can tab
+                   to the equation and see a visible focus indicator.
+    """
+    inner = _children_ml(omath_el)
+    tabindex = ' tabindex="0"' if focusable else ""
+    return (
+        f'<math xmlns="http://www.w3.org/1998/Math/MathML" display="{display}"{tabindex}>'
+        f"<mrow>{inner}</mrow>"
+        f"</math>"
+    )
+
+
+def _render_para_xml(para_p, bracket_refs: bool = True, focusable_math: bool = False) -> str:
+    """
+    Render an ``<a:p>`` element to HTML by walking its direct children.
+
+    Handles interleaved text runs (``<a:r>``) and OMML math wrappers
+    (``<a14:m>``).  Other children (paragraph properties, bookmarks, …)
+    are silently skipped.
+    """
+    A_R   = f"{_A}r"
+    A_T   = f"{_A}t"
+    A_RPR = f"{_A}rPr"
+    A14_M = f"{_A14}m"
+    M_OMATH     = f"{_M}oMath"
+    M_OMATHPARA = f"{_M}oMathPara"
+
+    parts = []
+    for child in para_p:
+        tag = child.tag
+
+        if tag == A_R:
+            t_el = child.find(A_T)
+            text = (t_el.text or "") if t_el is not None else ""
+            if not text:
+                continue
+            safe = escape_html(text)
+            rPr  = child.find(A_RPR)
+            if rPr is not None:
+                baseline = rPr.get("baseline")
+                if baseline:
+                    val = int(baseline)
+                    if val > 0:
+                        if bracket_refs and _CITATION_RE.match(text.strip()):
+                            safe = f"<sup>[{safe}]</sup>"
+                        else:
+                            safe = f"<sup>{safe}</sup>"
+                    elif val < 0:
+                        safe = f"<sub>{safe}</sub>"
+            parts.append(safe)
+
+        elif tag == A14_M:
+            # a14:m may contain m:oMathPara (block) or m:oMath (inline)
+            omath_para = child.find(M_OMATHPARA)
+            if omath_para is not None:
+                for omath in omath_para:
+                    if omath.tag == M_OMATH:
+                        parts.append(omml_to_mathml(omath, display="block", focusable=focusable_math))
+            else:
+                omath = child.find(M_OMATH)
+                if omath is not None:
+                    parts.append(omml_to_mathml(omath, display="inline", focusable=focusable_math))
+
+    return "".join(parts)
+
+
+def render_txBody_from_xml(txBody_el, base_heading_level: int = 3, bracket_refs: bool = True, focusable_math: bool = False) -> str:
+    """
+    Render a raw ``<p:txBody>`` (or ``<a:txBody>``) element to HTML.
+
+    Used for shapes extracted from ``<mc:AlternateContent>`` wrappers that
+    are not accessible through the standard python-pptx shape iterator.
+    """
+    A_P   = f"{_A}p"
+    A_PPR = f"{_A}pPr"
+    A_BUAUTONUM = f"{_A}buAutoNum"
+    A_BUCHAR    = f"{_A}buChar"
+    A14_M = f"{_A14}m"
+
+    html_parts = []
+    list_tag   = ""
+
+    for para_el in txBody_el.findall(A_P):
+        # Text content (python-pptx-style: concatenate all t elements)
+        text = "".join((t.text or "") for t in para_el.iter(f"{_A}t"))
+        has_math = para_el.find(A14_M) is not None
+
+        if not text.strip() and not has_math:
+            if list_tag:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
+            continue
+
+        safe = _render_para_xml(para_el, bracket_refs=bracket_refs, focusable_math=focusable_math)
+
+        # Detect list type from pPr
+        para_list_type = ""
+        pPr = para_el.find(A_PPR)
+        if pPr is not None:
+            if pPr.find(A_BUAUTONUM) is not None:
+                para_list_type = "ol"
+            elif pPr.find(A_BUCHAR) is not None:
+                para_list_type = "ul"
+
+        if para_list_type:
+            if list_tag and list_tag != para_list_type:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
+            if not list_tag:
+                html_parts.append(f"<{para_list_type}>")
+                list_tag = para_list_type
+            html_parts.append(f"  <li>{safe}</li>")
+        else:
+            if list_tag:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
+            html_parts.append(f"<p>{safe}</p>")
+
+    if list_tag:
+        html_parts.append(f"</{list_tag}>")
+
+    return "\n".join(html_parts)
+
+
+def render_paragraph_runs(para, bracket_refs: bool = True, focusable_math: bool = False) -> str:
+    """Render a paragraph's runs to HTML, preserving superscript/subscript
+    and converting any embedded OMML math to MathML.
+
+    If bracket_refs is True, superscript runs that look like citation numbers
+    (digits, commas, spaces, hyphens) are wrapped in brackets: [1,2,3].
+    """
+    result = _render_para_xml(para._p, bracket_refs=bracket_refs, focusable_math=focusable_math)
+    # Fallback for edge-case paragraphs with text but no structured runs/math
+    if not result and para.text.strip():
+        return escape_html(para.text.strip())
+    return result
+
+
+def _detect_list_type(para) -> str:
+    """Detect paragraph list type: 'ol', 'ul', or '' (not a list item)."""
+    A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+    try:
+        if para._p.pPr is not None:
+            if para._p.pPr.find(f"{A_NS}buAutoNum") is not None:
+                return "ol"
+            if para._p.pPr.find(f"{A_NS}buChar") is not None:
+                return "ul"
+    except Exception:
+        pass
+    return ""
+
+
+def render_text_frame(tf, base_heading_level: int = 3, bracket_refs: bool = True, focusable_math: bool = False) -> str:
     """
     Render a text frame to HTML.
     Paragraphs that look like headings (bold, larger font) become <hN>.
     Everything else becomes <p>.
     """
     html_parts = []
-    in_list = False
+    list_tag = ""  # "", "ul", or "ol"
 
     for para in tf.paragraphs:
         text = para.text.strip()
-        if not text:
-            if in_list:
-                html_parts.append("</ul>")
-                in_list = False
+        has_math = para._p.find(f"{_A14}m") is not None
+        if not text and not has_math:
+            if list_tag:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
             continue
 
-        safe = escape_html(text)
+        safe = render_paragraph_runs(para, bracket_refs=bracket_refs, focusable_math=focusable_math)
 
-        # Detect bullet / list paragraph
-        is_bullet = False
-        try:
-            if para._p.pPr is not None:
-                buNone = para._p.pPr.find(
-                    "{http://schemas.openxmlformats.org/drawingml/2006/main}buNone"
-                )
-                buChar = para._p.pPr.find(
-                    "{http://schemas.openxmlformats.org/drawingml/2006/main}buChar"
-                )
-                buAutoNum = para._p.pPr.find(
-                    "{http://schemas.openxmlformats.org/drawingml/2006/main}buAutoNum"
-                )
-                if buChar is not None or buAutoNum is not None:
-                    is_bullet = True
-        except Exception:
-            pass
+        # Detect bullet / numbered list paragraph
+        para_list_type = _detect_list_type(para)
 
         # Detect heading-like paragraph (bold + larger font in first run)
         is_heading = False
@@ -225,24 +667,28 @@ def render_text_frame(tf, base_heading_level: int = 3) -> str:
             pass
 
         if is_heading:
-            if in_list:
-                html_parts.append("</ul>")
-                in_list = False
+            if list_tag:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
             level = min(base_heading_level, 6)
             html_parts.append(f"<h{level}>{safe}</h{level}>")
-        elif is_bullet:
-            if not in_list:
-                html_parts.append("<ul>")
-                in_list = True
+        elif para_list_type:
+            # Switch list type if changing between ul and ol
+            if list_tag and list_tag != para_list_type:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
+            if not list_tag:
+                html_parts.append(f"<{para_list_type}>")
+                list_tag = para_list_type
             html_parts.append(f"  <li>{safe}</li>")
         else:
-            if in_list:
-                html_parts.append("</ul>")
-                in_list = False
+            if list_tag:
+                html_parts.append(f"</{list_tag}>")
+                list_tag = ""
             html_parts.append(f"<p>{safe}</p>")
 
-    if in_list:
-        html_parts.append("</ul>")
+    if list_tag:
+        html_parts.append(f"</{list_tag}>")
 
     return "\n".join(html_parts)
 
@@ -279,6 +725,13 @@ def render_table(shape) -> str:
     )
 
 
+def merge_adjacent_lists(html: str) -> str:
+    """Merge consecutive same-type list closings/openings with only whitespace between."""
+    html = re.sub(r'</ul>\s*<ul>', '', html)
+    html = re.sub(r'</ol>\s*<ol>', '', html)
+    return html
+
+
 # ── Core conversion ───────────────────────────────────────────────────────────
 
 def get_slide_dimensions(prs):
@@ -286,43 +739,68 @@ def get_slide_dimensions(prs):
     return prs.slide_width, prs.slide_height
 
 
-def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=None, slide_height=None) -> str:
-    """Convert a single slide to an HTML <section>."""
-    parts = [f'<section aria-label="Slide {slide_number}">']
+def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=None, slide_height=None, deck_title: str = "", bracket_refs: bool = True, focusable_math: bool = False, img_scale: float = 1.0) -> tuple:
+    """Convert a single slide, returning (title_text, content_html_parts).
 
+    Uses a single ordered walk over the slide's spTree so that
+    <mc:AlternateContent> math shapes (invisible to python-pptx's slide.shapes)
+    are emitted in document order alongside regular shapes rather than being
+    appended at the end.
+
+    The caller is responsible for section wrapping and title deduplication.
+    """
+    parts = []
     title_text = ""
-    content_shapes = []
 
-    # Separate title from content
+    # ── Step 1: build shape_id → Shape map from the python-pptx API ──
+    # Also extract the title and mark shapes to suppress (slide numbers,
+    # running headers) by simply omitting them from the map.
+    shape_map: dict = {}
     for shape in slide.shapes:
         if is_title_placeholder(shape) and shape_has_text(shape):
             title_text = shape.text_frame.text.strip()
+        elif is_slide_number_placeholder(shape):
+            pass  # skip — not added to map
+        elif is_running_header(shape, deck_title):
+            pass  # skip — not added to map
         else:
-            content_shapes.append(shape)
+            shape_map[shape.shape_id] = shape
 
-    # Emit slide title as h2
-    if title_text:
-        parts.append(f"  <h2>{escape_html(title_text)}</h2>")
-    else:
-        parts.append(f"  <h2>Slide {slide_number}</h2>")
+    # ── Step 2: helper to read the shape id from a raw XML element ──
+    def _xml_shape_id(el) -> int:
+        """Return the integer shape id from any spTree child element, or -1."""
+        for nvpr_tag in (
+            f"{_P}nvSpPr",
+            f"{_P}nvPicPr",
+            f"{_P}nvGrpSpPr",
+            f"{_P}nvGraphicFramePr",
+            f"{_P}nvCxnSpPr",
+        ):
+            nvpr = el.find(nvpr_tag)
+            if nvpr is not None:
+                cnvpr = nvpr.find(f"{_P}cNvPr")
+                if cnvpr is not None:
+                    try:
+                        return int(cnvpr.get("id", -1))
+                    except (ValueError, TypeError):
+                        pass
+        return -1
 
-    # Process content shapes
-    for shape in content_shapes:
+    # ── Step 3: helper to render one Shape object (reused for regular shapes) ──
+    def _render_shape(shape) -> None:
         # ── Image ──
         if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
             alt, is_decorative = get_alt_text_and_decorative(shape)
-            # Skip decorative images entirely (marked as decorative in PowerPoint)
             if is_decorative:
                 parts.append(f'  <!-- Decorative image skipped (slide {slide_number}) -->')
-                continue
+                return
             if not alt:
                 alt = f"Image on slide {slide_number}"
             try:
                 img = shape.image
                 data_uri = image_to_data_uri(img.blob, img.content_type)
-                # Convert EMUs to pixels (914400 EMUs = 1 inch, 96px = 1 inch)
-                px_w = round(shape.width / 914400 * 96)
-                px_h = round(shape.height / 914400 * 96)
+                px_w = round(shape.width / 914400 * 96 * img_scale)
+                px_h = round(shape.height / 914400 * 96 * img_scale)
                 size_style = f' style="width:{px_w}px; height:{px_h}px; max-width:100%; height:auto;"'
                 parts.append(
                     f'  <figure>\n'
@@ -336,16 +814,21 @@ def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=Non
         elif shape.has_table:
             parts.append(render_table(shape))
 
+        # ── Code block (monospace font or shape named "code") ──
+        elif shape.has_text_frame and is_code_shape(shape):
+            rendered = render_code_block(shape.text_frame)
+            if rendered:
+                parts.append(rendered)
+
         # ── Text frame ──
         elif shape.has_text_frame:
             text = shape.text_frame.text.strip()
             if not text:
-                continue
-            # Subtitle placeholder → introductory paragraph
+                return
             if is_subtitle_placeholder(shape):
                 parts.append(f"  <p class=\"subtitle\">{escape_html(text)}</p>")
             else:
-                rendered = render_text_frame(shape.text_frame, base_heading_level=3)
+                rendered = render_text_frame(shape.text_frame, base_heading_level=3, bracket_refs=bracket_refs, focusable_math=focusable_math)
                 if rendered:
                     parts.append(rendered)
 
@@ -363,8 +846,8 @@ def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=Non
                         data_uri = image_to_data_uri(img.blob, img.content_type)
                         size_style = ""
                         if slide_width and slide_height and slide_width > 0 and slide_height > 0:
-                            px_w = round(child.width / 914400 * 96)
-                            px_h = round(child.height / 914400 * 96)
+                            px_w = round(child.width / 914400 * 96 * img_scale)
+                            px_h = round(child.height / 914400 * 96 * img_scale)
                             size_style = f' style="width:{px_w}px; height:{px_h}px; max-width:100%; height:auto;"'
                         parts.append(
                             f'  <figure>\n'
@@ -373,6 +856,60 @@ def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=Non
                         )
                     except Exception:
                         pass
+
+    # ── Step 4: walk spTree direct children in document order ──
+    # Regular shape tags dispatch via shape_map to _render_shape (keeps the
+    # full python-pptx API).  <mc:AlternateContent> wrappers (math shapes
+    # invisible to slide.shapes) are rendered inline via the XML renderer,
+    # preserving their position in the reading order.
+    _SHAPE_TAGS = {
+        f"{_P}sp",
+        f"{_P}pic",
+        f"{_P}grpSp",
+        f"{_P}graphicFrame",
+        f"{_P}cxnSp",
+    }
+    try:
+        spTree = slide._element.find(f".//{_P}spTree")
+        if spTree is not None:
+            for child in spTree:
+                tag = child.tag
+
+                if tag in _SHAPE_TAGS:
+                    shape_id = _xml_shape_id(child)
+                    shape = shape_map.get(shape_id)
+                    if shape is not None:
+                        _render_shape(shape)
+
+                elif tag == f"{_MC}AlternateContent":
+                    # Math-containing text box — render from XML in document order
+                    choice = child.find(f"{_MC}Choice")
+                    if choice is None:
+                        continue
+                    for sp_el in choice.findall(f"{_P}sp"):
+                        txBody_el = sp_el.find(f"{_P}txBody")
+                        if txBody_el is None:
+                            continue
+                        # Skip title placeholders (capture text if not yet found)
+                        ph_type = ""
+                        nvPr = sp_el.find(f".//{_P}nvPr")
+                        if nvPr is not None:
+                            ph = nvPr.find(f"{_P}ph")
+                            if ph is not None:
+                                ph_type = ph.get("type", "")
+                        if ph_type in ("title", "ctrTitle"):
+                            if not title_text:
+                                title_text = "".join(
+                                    (t.text or "")
+                                    for t in txBody_el.iter(f"{_A}t")
+                                ).strip()
+                            continue
+                        rendered = render_txBody_from_xml(txBody_el, bracket_refs=bracket_refs, focusable_math=focusable_math)
+                        if rendered:
+                            parts.append(rendered)
+                # All other tags (p:grpSpPr etc.) are silently ignored
+    except Exception:
+        pass
 
     # ── Speaker notes ──
     if include_notes:
@@ -389,11 +926,10 @@ def convert_slide(slide, slide_number: int, include_notes: bool, slide_width=Non
         except Exception:
             pass
 
-    parts.append("</section>")
-    return "\n".join(parts)
+    return (title_text, parts)
 
 
-def convert_pptx(input_path: Path, output_path: Path, include_notes: bool) -> None:
+def convert_pptx(input_path: Path, output_path: Path, include_notes: bool, bracket_refs: bool = True, focusable_math: bool = False, mathjax: bool = False, img_scale: float = 1.0) -> None:
     """Convert a .pptx file to an accessible HTML file."""
     prs = Presentation(str(input_path))
     title = input_path.stem.replace("_", " ").replace("-", " ").title()
@@ -401,12 +937,56 @@ def convert_pptx(input_path: Path, output_path: Path, include_notes: bool) -> No
     slide_width = prs.slide_width
     slide_height = prs.slide_height
 
-    slide_sections = []
+    # Extract deck title from slide 1 to filter running headers on other slides
+    deck_title = ""
+    if prs.slides:
+        for shape in prs.slides[0].shapes:
+            if is_title_placeholder(shape) and shape_has_text(shape):
+                deck_title = shape.text_frame.text.strip()
+                break
+
+    # Collect (title, content_parts, slide_number) for each slide
+    slide_data = []
     for i, slide in enumerate(prs.slides, start=1):
-        slide_sections.append(convert_slide(slide, i, include_notes, slide_width, slide_height))
+        slide_title, parts = convert_slide(slide, i, include_notes, slide_width, slide_height, deck_title=deck_title, bracket_refs=bracket_refs, focusable_math=focusable_math, img_scale=img_scale)
+        slide_data.append((slide_title, parts, i))
+
+    # Group consecutive slides that share the same title
+    # Each group becomes one <section> with one <h2>
+    groups = []  # list of (title, first_slide_number, combined_parts)
+    for slide_title, parts, slide_num in slide_data:
+        effective_title = slide_title if slide_title else f"Slide {slide_num}"
+        if groups and groups[-1][0] == effective_title:
+            # Same title as previous — append content to existing group
+            groups[-1][2].extend(parts)
+        else:
+            groups.append((effective_title, slide_num, list(parts)))
+
+    # Build section HTML for each group, merging adjacent lists
+    slide_sections = []
+    for group_title, first_slide_num, content_parts in groups:
+        section_lines = [f'<section aria-label="Slide {first_slide_num}">']
+        section_lines.append(f"  <h2>{escape_html(group_title)}</h2>")
+        content_html = "\n".join(content_parts)
+        content_html = merge_adjacent_lists(content_html)
+        section_lines.append(content_html)
+        section_lines.append("</section>")
+        slide_sections.append("\n".join(section_lines))
 
     slides_html = "\n\n".join(slide_sections)
     total = len(prs.slides)
+
+    # ── Optional CSS / script injections ──────────────────────────────────────
+    _focusable_css = (
+        "\n    /* ── Focusable math ── */\n"
+        '    math[tabindex="0"] { cursor: default; border-radius: 2px; outline-offset: 3px; }\n'
+        '    math[tabindex="0"]:focus { outline: 2px solid #005fcc; background: #f0f4ff; }'
+    ) if focusable_math else ""
+
+    _mathjax_scripts = (
+        '\n<script src="https://cdn.jsdelivr.net/npm/mathjax@4/tex-mml-chtml.js"'
+        " defer></script>"
+    ) if mathjax else ""
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -475,6 +1055,21 @@ def convert_pptx(input_path: Path, output_path: Path, include_notes: bool) -> No
     p {{ margin: 0.5rem 0; }}
     ul {{ padding-left: 1.5rem; margin: 0.5rem 0; }}
     li {{ margin: 0.25rem 0; }}
+    /* ── Code blocks ── */
+    pre {{
+      background: #1e1e1e;
+      color: #d4d4d4;
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      overflow-x: auto;
+      margin: 1rem 0;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }}
+    pre code {{
+      font-family: Consolas, "Courier New", "Fira Mono", monospace;
+      white-space: pre;
+    }}
     /* ── Images ── */
     figure {{
       margin: 1rem 0;
@@ -528,9 +1123,9 @@ def convert_pptx(input_path: Path, output_path: Path, include_notes: bool) -> No
       font-size: 1.1rem;
       color: #444;
       font-style: italic;
-    }}
+    }}{_focusable_css}
   </style>
-</head>
+{_mathjax_scripts}</head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <main id="main-content">
@@ -545,7 +1140,7 @@ def convert_pptx(input_path: Path, output_path: Path, include_notes: bool) -> No
 """
 
     output_path.write_text(html, encoding="utf-8")
-    print(f"✓  {input_path.name}  →  {output_path}")
+    print(f"OK  {input_path.name}  ->  {output_path}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -568,9 +1163,36 @@ def main():
         action="store_true",
         help="Include speaker notes in the HTML output."
     )
+    parser.add_argument(
+        "--no-bracket-refs",
+        action="store_true",
+        help="Disable bracketing of superscript citation numbers (e.g. [1,2,3])."
+    )
+    parser.add_argument(
+        "--focusable-math",
+        action="store_true",
+        help="Add tabindex='0' to each <math> element so keyboard users can tab to equations."
+    )
+    parser.add_argument(
+        "--mathjax",
+        action="store_true",
+        help="Inject MathJax 4 (mml-chtml) script tags for enhanced math rendering in all browsers."
+    )
+    parser.add_argument(
+        "--img-scale",
+        type=float,
+        default=100.0,
+        metavar="PCT",
+        help="Scale images to PCT%% of their slide dimensions (default: 100). "
+             "Use values like 50 or 75 to reduce image size."
+    )
     args = parser.parse_args()
 
-    input_path = Path(args.input)
+    input_path    = Path(args.input)
+    bracket_refs  = not args.no_bracket_refs
+    focusable_math = args.focusable_math
+    mathjax        = args.mathjax
+    img_scale      = max(0.01, args.img_scale) / 100.0
 
     # ── Batch mode: folder ──
     if input_path.is_dir():
@@ -580,7 +1202,7 @@ def main():
             sys.exit(1)
         for pptx_file in pptx_files:
             out = pptx_file.with_suffix(".html")
-            convert_pptx(pptx_file, out, args.include_notes)
+            convert_pptx(pptx_file, out, args.include_notes, bracket_refs=bracket_refs, focusable_math=focusable_math, mathjax=mathjax, img_scale=img_scale)
         print(f"\nDone. {len(pptx_files)} file(s) converted.")
         return
 
@@ -597,7 +1219,7 @@ def main():
     else:
         output_path = input_path.with_suffix(".html")
 
-    convert_pptx(input_path, output_path, args.include_notes)
+    convert_pptx(input_path, output_path, args.include_notes, bracket_refs=bracket_refs, focusable_math=focusable_math, mathjax=mathjax, img_scale=img_scale)
     print("Done.")
 
 
